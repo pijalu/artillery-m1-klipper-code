@@ -11,6 +11,8 @@ import stepper
 # Field helpers
 ######################################################################
 
+TMC_ERROR_COUNT=30
+
 # Return the position of the first bit set in a mask
 def ffs(mask):
     return (mask & -mask).bit_length() - 1
@@ -137,7 +139,7 @@ class TMCErrorCheck:
                 val = self.mcu_tmc.get_register(reg_name)
             except self.printer.command_error as e:
                 count += 1
-                if count < 3 and str(e).startswith("Unable to read tmc uart"):
+                if count < TMC_ERROR_COUNT and str(e).startswith("Unable to read tmc uart"):
                     # Allow more retries on a TMC UART read error
                     reactor = self.printer.get_reactor()
                     reactor.pause(reactor.monotonic() + 0.050)
@@ -148,6 +150,7 @@ class TMCErrorCheck:
                 logging.info("TMC '%s' reports %s", self.stepper_name, fmt)
             reg_info[0] = last_value = val
             if not val & err_mask:
+                # 检查驱动是否复位
                 if not cs_actual_mask or val & cs_actual_mask:
                     break
                 irun = self.fields.get_field(self.irun_field)
@@ -158,7 +161,7 @@ class TMCErrorCheck:
                     break
                 # CS_ACTUAL field of zero - indicates a driver reset
             count += 1
-            if count >= 3:
+            if count >= TMC_ERROR_COUNT:
                 fmt = self.fields.pretty_format(reg_name, val)
                 raise self.printer.command_error("TMC '%s' reports error: %s"
                                                  % (self.stepper_name, fmt))
@@ -190,6 +193,9 @@ class TMCErrorCheck:
             return
         self.printer.get_reactor().unregister_timer(self.check_timer)
         self.check_timer = None
+
+    ########################################
+    # TMC 
     def start_checks(self):
         if self.check_timer is not None:
             self.stop_checks()
@@ -201,7 +207,7 @@ class TMCErrorCheck:
         reactor = self.printer.get_reactor()
         curtime = reactor.monotonic()
         self.check_timer = reactor.register_timer(self._do_periodic_check,
-                                                  curtime + 1.)
+                                                  curtime + 5.)
         if cleared_flags:
             reset_mask = self.fields.all_fields["GSTAT"]["reset"]
             if cleared_flags & reset_mask:

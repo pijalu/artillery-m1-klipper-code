@@ -223,7 +223,7 @@ class MCU_trsync:
             s.note_homing_end()
         return params['trigger_reason']
 
-TRSYNC_TIMEOUT = 0.025
+TRSYNC_TIMEOUT = 0.05 # 建议使用0.05   默认0.025
 TRSYNC_SINGLE_MCU_TIMEOUT = 0.250
 
 class TriggerDispatch:
@@ -345,12 +345,61 @@ class MCU_endstop:
         params = self._query_cmd.send([self._oid])
         next_clock = self._mcu.clock32_to_clock64(params['next_clock'])
         return self._mcu.clock_to_print_time(next_clock - self._rest_ticks)
+    def home_zero(self):
+        pass
+    def home_check(self):
+        pass
     def query_endstop(self, print_time):
         clock = self._mcu.print_time_to_clock(print_time)
         if self._mcu.is_fileoutput():
             return 0
         params = self._query_cmd.send([self._oid], minclock=clock)
         return params['pin_value'] ^ self._invert
+
+class MCU_static_out:
+    def __init__(self, mcu, pin_params):
+        self._mcu = mcu
+        self._oid = None
+        self._mcu.register_config_callback(self._build_config)
+        self._pin = pin_params['pin']
+        self._invert = pin_params['invert']
+        self._start_value = self._shutdown_value = self._invert
+        self._max_duration = 2.
+        self._last_clock = 0
+        self._set_cmd = None
+    def get_mcu(self):
+        return self._mcu
+    def setup_max_duration(self, max_duration):
+        self._max_duration = max_duration
+    def setup_start_value(self, start_value, shutdown_value):
+        self._start_value = (not not start_value) ^ self._invert
+        self._shutdown_value = (not not shutdown_value) ^ self._invert
+    def _build_config(self):
+        if self._max_duration and self._start_value != self._shutdown_value:
+            raise pins.error("Pin with max duration must have start"
+                             " value equal to shutdown value")
+        mdur_ticks = self._mcu.seconds_to_clock(self._max_duration)
+        if mdur_ticks >= 1<<31:
+            raise pins.error("Digital pin max duration too large")
+        self._mcu.request_move_queue_slot() # 这个待定
+        self._oid = self._mcu.create_oid()
+
+        # 初始化GPIO的指令
+        self._mcu.add_config_cmd(
+            "config_static_out oid=%d pin=%s value=%d default_value=%d"
+            " max_duration=%d" % (self._oid, self._pin, self._start_value,
+                                  self._shutdown_value, mdur_ticks))
+
+        cmd_queue = self._mcu.alloc_command_queue()
+        self._set_cmd = self._mcu.lookup_command(
+            "queue_static_out oid=%c clock=%u on_ticks=%u", cq=cmd_queue)
+    def set_static_digital(self, print_time, value):
+        clock = self._mcu.print_time_to_clock(print_time)
+        # self._set_cmd.send([self._oid, clock, (not not value) ^ self._invert],
+        #                    minclock=self._last_clock, reqclock=clock)
+        self._set_cmd.send([self._oid, clock, (not not value) ^ self._invert])
+
+        self._last_clock = clock
 
 class MCU_digital_out:
     def __init__(self, mcu, pin_params):
@@ -725,6 +774,7 @@ class MCU:
             raise error("MCU '%s' error during config: %s" % (
                 self._name, self._shutdown_msg))
         if config_params['is_shutdown']:
+            # self._firmware_restart()
             raise error("Can not update MCU '%s' config as it is shutdown" % (
                 self._name,))
         return config_params
@@ -748,7 +798,8 @@ class MCU:
             self._send_config(None)
             config_params = self._send_get_config()
             if not config_params['is_config'] and not self.is_fileoutput():
-                raise error("Unable to configure MCU '%s'" % (self._name,))
+                self._firmware_restart()
+                # raise error("Unable to configure MCU '%s'" % (self._name,))
         else:
             start_reason = self._printer.get_start_args().get("start_reason")
             if start_reason == 'firmware_restart':
@@ -842,7 +893,7 @@ class MCU:
     # Config creation helpers
     def setup_pin(self, pin_type, pin_params):
         pcs = {'endstop': MCU_endstop,
-               'digital_out': MCU_digital_out, 'pwm': MCU_pwm, 'adc': MCU_adc}
+               'digital_out': MCU_digital_out, 'pwm': MCU_pwm, 'adc': MCU_adc, 'static_out':MCU_static_out}
         if pin_type not in pcs:
             raise pins.error("pin type %s not supported on mcu" % (pin_type,))
         return pcs[pin_type](self, pin_params)
@@ -975,8 +1026,8 @@ class MCU:
         ret = self._ffi_lib.steppersync_flush(self._steppersync, clock,
                                               clear_history_clock)
         if ret:
-            raise error("Internal error in MCU '%s' stepcompress"
-                        % (self._name,))
+            raise error("Internal error in MCU '%s' stepcompress -- ret code: %d"
+                        % (self._name, ret))
     def check_active(self, print_time, eventtime):
         if self._steppersync is None:
             return

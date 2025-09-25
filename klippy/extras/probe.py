@@ -278,6 +278,7 @@ class ProbeSessionHelper:
         if self.multi_probe_pending:
             self._probe_state_error()
         self.mcu_probe.multi_probe_begin()
+        self.mcu_probe.home_zero()
         self.multi_probe_pending = True
         self.results = []
         return self
@@ -310,12 +311,14 @@ class ProbeSessionHelper:
     def _probe(self, speed):
         toolhead = self.printer.lookup_object('toolhead')
         curtime = self.printer.get_reactor().monotonic()
+
         if 'z' not in toolhead.get_status(curtime)['homed_axes']:
             raise self.printer.command_error("Must home before probe")
         pos = toolhead.get_position()
         pos[2] = self.z_position
+       
         try:
-            epos = self.mcu_probe.probing_move(pos, speed)
+            epos = self.mcu_probe.probing_move(pos, speed)  # 执行探点
         except self.printer.command_error as e:
             reason = str(e)
             if "Timeout during endstop homing" in reason:
@@ -348,6 +351,10 @@ class ProbeSessionHelper:
                     raise gcmd.error("Probe samples exceed samples_tolerance")
                 gcmd.respond_info("Probe samples exceed tolerance. Retrying...")
                 retries += 1
+                # 超过两次直接清零
+                if(retries == 1):
+                    self.mcu_probe.home_zero()
+                    retries = 0 
                 positions = []
             # Retract
             if len(positions) < sample_count:
@@ -385,6 +392,7 @@ class ProbePointsHelper:
         self.probe_points = default_points
         self.name = config.get_name()
         self.gcode = self.printer.lookup_object('gcode')
+        self.mcu_probe = self.printer.lookup_object('probe').mcu_probe
         # Read config settings
         if default_points is None or config.get('points', None) is not None:
             self.probe_points = config.getlists('points', seps=(',', '\n'),
@@ -426,10 +434,17 @@ class ProbePointsHelper:
     def _move_next(self, probe_num):
         # Move to next XY probe point
         nextpos = list(self.probe_points[probe_num])
+        toolhead = self.printer.lookup_object('toolhead')
         if self.use_offsets:
             nextpos[0] -= self.probe_offsets[0]
             nextpos[1] -= self.probe_offsets[1]
         self._move(nextpos, self.speed)
+        toolhead.wait_moves()
+        toolhead.dwell(0.05)
+        self.mcu_probe.home_zero()
+        toolhead.dwell(0.05)
+
+
     def start_probe(self, gcmd):
         manual_probe.verify_no_manual_probe(self.printer)
         # Lookup objects

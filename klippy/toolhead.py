@@ -646,7 +646,7 @@ class ToolHead:
                "square_corner_velocity: %.6f" % (
                    self.max_velocity, self.max_accel,
                    self.min_cruise_ratio, self.square_corner_velocity))
-        self.printer.set_rollover_info("toolhead", "toolhead: %s" % (msg,))
+        # self.printer.set_rollover_info("toolhead", "toolhead: %s" % (msg,))#注释掉,一些gcode里面会添加大量这个指令,会导致日志过多
         if (max_velocity is None and max_accel is None
             and square_corner_velocity is None and min_cruise_ratio is None):
             gcmd.respond_info(msg, log=False)

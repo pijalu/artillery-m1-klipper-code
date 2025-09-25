@@ -49,6 +49,8 @@ obtaining.""",
     ("Command request",): """
 This generally occurs in response to an M112 G-Code command
 or in response to an internal error in the host software.""",
+    ("weight_error",): """
+CS传感器有问题，请检查一下接线！""",
 }
 
 def error_hint(msg):

@@ -106,3 +106,7 @@ def load_config_prefix(config):
     thermistor = CustomThermistor(config)
     pheaters = config.get_printer().load_object(config, "heaters")
     pheaters.add_sensor_factory(thermistor.name, thermistor.create)
+
+    # 用于风冷的模块 - wangchong 
+    air_pheaters = config.get_printer().load_object(config, "heater_air")
+    air_pheaters.add_sensor_factory(thermistor.name, thermistor.create)

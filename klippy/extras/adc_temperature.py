@@ -334,3 +334,8 @@ def load_config_prefix(config):
         custom_sensor = CustomLinearResistance(config)
     pheaters = config.get_printer().load_object(config, "heaters")
     pheaters.add_sensor_factory(custom_sensor.name, custom_sensor.create)
+
+    air_pheaters = config.get_printer().load_object(config, "heater_air")
+    air_pheaters.add_sensor_factory(custom_sensor.name, custom_sensor.create)
+
+

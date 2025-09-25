@@ -30,6 +30,10 @@ class VirtualSD:
         self.must_pause_work = self.cmd_from_sd = False
         self.next_file_position = 0
         self.work_timer = None
+        self.diy_state = "STEP_NO_WORK"
+        self.file_to_print = "gcode"
+        self.if_level = True
+        self.if_shape = False
         # Error handling
         gcode_macro = self.printer.load_object(config, 'gcode_macro')
         self.on_error_gcode = gcode_macro.load_template(
@@ -46,6 +50,21 @@ class VirtualSD:
         self.gcode.register_command(
             "SDCARD_PRINT_FILE", self.cmd_SDCARD_PRINT_FILE,
             desc=self.cmd_SDCARD_PRINT_FILE_help)
+        self.gcode.register_command(
+            "SDCARD_SELECT_FILE", self.cmd_SDCARD_SELECT_FILE,
+            desc=self.cmd_SDCARD_SELECT_FILE_help)
+        self.gcode.register_command(
+            "SDCARD_DIY_STATUS", self.cmd_SDCARD_DIY_STATUS,
+            desc=self.cmd_SDCARD_DIY_STATUS_help)
+        self.gcode.register_command(
+            "SDCARD_FILE_TO_PRINT", self.cmd_SDCARD_FILE_TO_PRINT,
+            desc=self.cmd_SDCARD_FILE_TO_PRINT_help)
+        self.gcode.register_command(
+            "SDCARD_IF_LEVEL", self.cmd_SDCARD_IF_LEVEL,
+            desc=self.cmd_SDCARD_IF_LEVEL_help)
+        self.gcode.register_command(
+            "SDCARD_IF_SHAPE", self.cmd_SDCARD_IF_SHAPE,
+            desc=self.cmd_SDCARD_IF_SHAPE_help)
     def handle_shutdown(self):
         if self.work_timer is not None:
             self.must_pause_work = True
@@ -91,6 +110,10 @@ class VirtualSD:
                 raise self.gcode.error("Unable to get file list")
     def get_status(self, eventtime):
         return {
+            'diy_status': self.diy_status(),
+            'file_to_print': self.file_to_print_cur(),
+            'if_level': self.if_level_status(),
+            'if_shape': self.if_shape_status(),
             'file_path': self.file_path(),
             'progress': self.progress(),
             'is_active': self.is_active(),
@@ -106,6 +129,21 @@ class VirtualSD:
             return float(self.file_position) / self.file_size
         else:
             return 0.
+    def diy_status(self):
+        if self.diy_state != "":
+            return self.diy_state
+        return "STEP_NO_WORK"
+    def reset_diy_status(self):
+        self.diy_state = "STEP_NO_WORK"
+        self.file_to_print = "gcode"
+        self.if_level = True
+        self.if_shape = False
+    def file_to_print_cur(self):
+        return self.file_to_print
+    def if_level_status(self):
+        return self.if_level
+    def if_shape_status(self):
+        return self.if_shape
     def is_active(self):
         return self.work_timer is not None
     def do_pause(self):
@@ -126,6 +164,7 @@ class VirtualSD:
             self.current_file = None
             self.print_stats.note_cancel()
         self.file_position = self.file_size = 0
+        self.reset_diy_status()
     # G-Code commands
     def cmd_error(self, gcmd):
         raise gcmd.error("SD write not supported")
@@ -134,6 +173,7 @@ class VirtualSD:
             self.do_pause()
             self.current_file.close()
             self.current_file = None
+            self.reset_diy_status()
         self.file_position = self.file_size = 0
         self.print_stats.reset()
         self.printer.send_event("virtual_sdcard:reset_file")
@@ -155,6 +195,52 @@ class VirtualSD:
             filename = filename[1:]
         self._load_file(gcmd, filename, check_subdirs=True)
         self.do_resume()
+    cmd_SDCARD_SELECT_FILE_help = "Select a SD file.  May "\
+        "include files in subdirectories."
+    def cmd_SDCARD_SELECT_FILE(self, gcmd):#2024年4月30日 M23只能选择virtual_sdcard下的文件，需要一个非传统指令接受路径参数
+        if self.work_timer is not None:
+            raise gcmd.error("SD busy")
+        self._reset_file()
+        filename = gcmd.get("FILENAME")
+        if filename[0] == '/':
+            filename = filename[1:]
+        self._load_file(gcmd, filename, check_subdirs=True)
+    cmd_SDCARD_DIY_STATUS_help = "Set diy print state."
+    def cmd_SDCARD_DIY_STATUS(self, gcmd):
+        state = gcmd.get("STATE")
+        if state != "":
+            self.diy_state = state
+            gcmd.respond_raw("Current diy status:%s" % (state))
+    cmd_SDCARD_FILE_TO_PRINT_help = "Set file_to_print."
+    def cmd_SDCARD_FILE_TO_PRINT(self, gcmd):
+        file = gcmd.get("FILE")
+        if file != "":
+            self.file_to_print = file
+            gcmd.respond_raw("Prepare for printing of file:%s" % (file))
+    cmd_SDCARD_IF_LEVEL_help = "Set if_level."
+    def cmd_SDCARD_IF_LEVEL(self, gcmd):
+        state = gcmd.get("STATE")
+        if state != "":
+            if state == "TRUE":
+                self.if_level = True
+            elif state == "FALSE":
+                self.if_level = False
+            else:
+                raise gcmd.error("STATE must be TRUE or FALSE")
+        else:
+            raise gcmd.error("STATE must be TRUE or FALSE")
+    cmd_SDCARD_IF_SHAPE_help = "Set if_shape."
+    def cmd_SDCARD_IF_SHAPE(self, gcmd):
+        state = gcmd.get("STATE")
+        if state != "":
+            if state == "TRUE":
+                self.if_shape = True
+            elif state == "FALSE":
+                self.if_shape = False
+            else:
+                raise gcmd.error("STATE must be TRUE or FALSE")
+        else:
+            raise gcmd.error("STATE must be TRUE or FALSE")
     def cmd_M20(self, gcmd):
         # List SD card
         files = self.get_file_list()
@@ -230,6 +316,7 @@ class VirtualSD:
         except:
             logging.exception("virtual_sdcard seek")
             self.work_timer = None
+            self.reset_diy_status()
             return self.reactor.NEVER
         self.print_stats.note_start()
         gcode_mutex = self.gcode.get_mutex()
@@ -290,6 +377,7 @@ class VirtualSD:
                 except:
                     logging.exception("virtual_sdcard seek")
                     self.work_timer = None
+                    self.reset_diy_status()
                     return self.reactor.NEVER
                 lines = []
                 partial_input = ""
@@ -297,10 +385,12 @@ class VirtualSD:
         self.work_timer = None
         self.cmd_from_sd = False
         if error_message is not None:
+            self.reset_diy_status()
             self.print_stats.note_error(error_message)
         elif self.current_file is not None:
             self.print_stats.note_pause()
         else:
+            self.reset_diy_status()
             self.print_stats.note_complete()
         return self.reactor.NEVER
 
