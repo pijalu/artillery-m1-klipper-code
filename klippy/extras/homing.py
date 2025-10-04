@@ -137,6 +137,7 @@ class HomingMove:
                 halt_kin_spos = {s.get_name(): s.get_commanded_position()
                                  for s in kin.get_steppers()}
                 haltpos = self.calc_toolhead_pos(halt_kin_spos, over_steps)
+        
         self.toolhead.set_position(haltpos)
         # Signal homing/probing move complete
         try:
@@ -194,6 +195,7 @@ class Homing:
     
     # 另外重写二次回零的过程
     def home_second_genera(self, rails, forcepos, movepos, hi, endstops, mcu_endstop):
+        kin = self.toolhead.get_kinematics()
         startpos = self._fill_coord(forcepos)
         homepos = self._fill_coord(movepos)
         axes_d = [hp - sp for hp, sp in zip(homepos, startpos)]
@@ -215,21 +217,34 @@ class Homing:
             epos = hmove.homing_move(homepos, hi.second_homing_speed, True)
             self.toolhead.manual_move(probexy + [epos[2] + 1.5], hi.speed)
             epos1 = hmove.homing_move(homepos, hi.second_homing_speed, True)
-            self.toolhead.manual_move(probexy + [epos[2] + 1.5], hi.speed)
+            
             z_diff = abs(epos[2] - epos1[2])
-            # 讲道理这里需要重新设置一下坐标，这样甚至可以不需要再来一次homing second, 避免
-            # 第二次出现意外导致回零不正常，但是需要做一下验证！！！！，暂时保留！
+           
             logging.info("WEIGHT: second homing epos:%s, %s, %.3f", epos, epos1, z_diff)
             if z_diff < 0.02:
+                # we are good
+                self.toolhead.set_position(homepos)
+                # Let see if any adjustments are needed
+                over_steps = {sp.stepper_name: sp.halt_pos - sp.trig_pos
+                          for sp in hmove.stepper_positions}
+                if any(over_steps.values()):
+                    halt_kin_spos = {s.get_name(): s.get_commanded_position()
+                                    for s in kin.get_steppers()}
+                    haltpos = hmove.calc_toolhead_pos(halt_kin_spos, over_steps)
+                    self.toolhead.set_position(haltpos)
                 break
+            
+            # Move back up from last probe point and retry
+            logging.info("WEIGHT: second homing z_diff too large, retry!")
+            self.toolhead.manual_move(probexy + [epos1[2] + 1.5], hi.speed)
+
             retry_count = retry_count + 1
             if retry_count > 2:
                 logging.info("WEIGHT:run home_second_genera retry!")
                 # 重新做一次清零
                 for mcu_endstop1, name in endstops:
                     mcu_endstop1.home_zero() 
-        #正常走回零确定坐标
-        hmove.homing_move(homepos, hi.second_homing_speed)    
+
     
     def home_rails(self, rails, forcepos, movepos):
         
@@ -269,80 +284,6 @@ class Homing:
         # Perform second home
         if hi.retract_dist:
             self.home_second_genera(rails, forcepos, movepos, hi, endstops, mcu_endstop)
-
-            '''
-            # Retract
-            startpos = self._fill_coord(forcepos)
-            homepos = self._fill_coord(movepos)
-            axes_d = [hp - sp for hp, sp in zip(homepos, startpos)]
-            move_d = math.sqrt(sum([d*d for d in axes_d[:3]]))
-            retract_r = min(1., hi.retract_dist / move_d)
-            retractpos = [hp - ad * retract_r
-                          for hp, ad in zip(homepos, axes_d)]
-            self.toolhead.move(retractpos, hi.retract_speed)
-            self.toolhead.dwell(1)
-            # Home again
-            startpos = [rp - ad * retract_r
-                        for rp, ad in zip(retractpos, axes_d)]
-            self.toolhead.set_position(startpos)
-            hmove = HomingMove(self.printer, endstops)
-            hmove.homing_move(homepos, hi.second_homing_speed)
-
-            # debug remove..   # fix-wangchong
-            # if hmove.check_no_movement() is not None:
-            #     raise self.printer.command_error(
-            #         "Endstop %s still triggered after retract"
-            #         % (hmove.check_no_movement(),))
-
-            # 这里应该要重试
-            # if hmove.check_no_movement() is not None:
-
-            for i in range(3):
-                startpos = self._fill_coord(forcepos)
-                homepos = self._fill_coord(movepos)
-                startpos = [rp - ad * retract_r
-                        for rp, ad in zip(retractpos, axes_d)]
-                axes_d = [hp - sp for hp, sp in zip(homepos, startpos)]
-                move_d = math.sqrt(sum([d*d for d in axes_d[:3]]))
-                retract_r = min(1., hi.retract_dist / move_d)
-                retractpos = [hp - ad * retract_r
-                            for hp, ad in zip(homepos, axes_d)]
-                self.toolhead.move(retractpos, hi.retract_speed)
-                # self.toolhead.dwell(1)
-                startpos = [rp - ad * retract_r
-                            for rp, ad in zip(retractpos, axes_d)]
-                self.toolhead.set_position(startpos)
-                hmove = HomingMove(self.printer, endstops)
-                hmove.homing_move(homepos, hi.second_homing_speed)
-                RES = hmove.check_no_movement()
-
-                # 检查有问题，回到没问题为止
-                RES = hmove.check_no_movement()
-                COUNT = 0
-                while RES is not None and COUNT != 0:
-                    startpos = self._fill_coord(forcepos)
-                    homepos = self._fill_coord(movepos)
-                    startpos = [rp - ad * retract_r
-                            for rp, ad in zip(retractpos, axes_d)]
-                    axes_d = [hp - sp for hp, sp in zip(homepos, startpos)]
-                    move_d = math.sqrt(sum([d*d for d in axes_d[:3]]))
-                    retract_r = min(1., hi.retract_dist / move_d)
-                    retractpos = [hp - ad * retract_r
-                                for hp, ad in zip(homepos, axes_d)]
-                    self.toolhead.move(retractpos, hi.retract_speed)
-                    self.toolhead.dwell(1)
-                    if COUNT == 2:
-                        mcu_endstop.home_zero()
-                        COUNT = 0
-                    self.toolhead.dwell(1)
-                    startpos = [rp - ad * retract_r
-                                for rp, ad in zip(retractpos, axes_d)]
-                    self.toolhead.set_position(startpos)
-                    hmove = HomingMove(self.printer, endstops)
-                    hmove.homing_move(homepos, hi.second_homing_speed)
-                    RES = hmove.check_no_movement()
-                    COUNT = COUNT +1
-            '''
 
         # Signal home operation complete
         self.toolhead.flush_step_generation()
