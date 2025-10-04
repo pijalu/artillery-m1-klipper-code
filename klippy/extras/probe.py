@@ -137,6 +137,12 @@ class ProbeCommandHelper:
             pos = toolhead.get_position()
             liftpos = [None, None, pos[2] + params['sample_retract_dist']]
             self._move(liftpos, params['lift_speed'])
+            # reset weight probe
+            toolhead.wait_moves()
+            toolhead.dwell(0.05)
+            self.probe.mcu_probe.home_zero()
+            toolhead.dwell(0.05)
+
         positions = probe_session.pull_probed_results()
         probe_session.end_probe_session()
         # Calculate maximum, minimum and average values
