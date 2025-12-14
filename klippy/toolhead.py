@@ -203,6 +203,12 @@ DRIP_TIME = 0.100
 class DripModeEndSignal(Exception):
     pass
 
+class FeedModeEndSignal(Exception):
+    pass
+
+class UnloadModeEndSignal(Exception):
+    pass
+
 # Main code to track events (and their timing) on the printer toolhead
 class ToolHead:
     def __init__(self, config):
@@ -245,6 +251,10 @@ class ToolHead:
         self.special_queuing_state = "NeedPrime"
         self.priming_timer = None
         self.drip_completion = None
+
+        self.feed_completion = None
+        self.unload_completion = None
+
         # Flush tracking
         self.flush_timer = self.reactor.register_timer(self._flush_handler)
         self.do_kick_flush_timer = True
@@ -514,6 +524,40 @@ class ToolHead:
             self.note_mcu_movequeue_activity(npt + self.kin_flush_delay,
                                              set_step_gen_time=True)
             self._advance_move_time(npt)
+    def _update_feed_move_time(self, next_print_time):
+        flush_delay = DRIP_TIME + STEPCOMPRESS_FLUSH_TIME + self.kin_flush_delay
+        logging.info(f"self.print_time: {self.print_time} next_print_time: {next_print_time}")
+        while self.print_time < next_print_time:
+            if self.feed_completion.test():
+                logging.info(f"来到这个地方这里: {self.print_time}")
+                raise FeedModeEndSignal()
+            curtime = self.reactor.monotonic()
+            est_time = self.mcu.estimated_print_time(curtime)
+            wait_time = self.print_time - est_time - flush_delay
+            if wait_time > 0. and self.can_pause:
+                self.feed_completion.wait(curtime + wait_time)
+                continue
+
+            npt = min(self.print_time + DRIP_SEGMENT_TIME, next_print_time)
+            self.note_mcu_movequeue_activity(npt + self.kin_flush_delay,
+                                             set_step_gen_time=True)
+            self._advance_move_time(npt)
+    def _update_unload_move_time(self, next_print_time):
+        flush_delay = DRIP_TIME + STEPCOMPRESS_FLUSH_TIME + self.kin_flush_delay
+        while self.print_time < next_print_time:
+            if self.unload_completion.test():
+                logging.info(f"抛出异常")
+                raise UnloadModeEndSignal()
+            curtime = self.reactor.monotonic()
+            est_time = self.mcu.estimated_print_time(curtime)
+            wait_time = self.print_time - est_time - flush_delay
+            if wait_time > 0. and self.can_pause:
+                self.unload_completion.wait(curtime + wait_time)
+                continue
+            npt = min(self.print_time + DRIP_SEGMENT_TIME, next_print_time)
+            self.note_mcu_movequeue_activity(npt + self.kin_flush_delay,
+                                             set_step_gen_time=True)
+            self._advance_move_time(npt)
     def drip_move(self, newpos, speed, drip_completion):
         self.dwell(self.kin_flush_delay)
         # Transition from "NeedPrime"/"Priming"/main state to "Drip" state
@@ -541,6 +585,36 @@ class ToolHead:
         # Exit "Drip" state
         self.reactor.update_timer(self.flush_timer, self.reactor.NOW)
         self.flush_step_generation()
+    def feed_move(self, start_feed_activity, stop_feed_activity, next_print_time, feed_completion):
+        self.dwell(self.kin_flush_delay)
+        self._flush_lookahead()
+        self.special_queuing_state = "Feed"
+        self.need_check_pause = self.reactor.NEVER
+        self.reactor.update_timer(self.flush_timer, self.reactor.NEVER)
+        self.do_kick_flush_timer = False
+        self.feed_completion = feed_completion
+        start_feed_activity()
+        try:
+            logging.info(f"下一次执行时间: {next_print_time}")
+            self._update_feed_move_time(next_print_time)
+        except FeedModeEndSignal:
+            logging.info("限位触发 -> 异常抛出中断")
+            stop_feed_activity()
+        self.reactor.update_timer(self.flush_timer, self.reactor.NOW )
+    def unload_move(self, start_unload_activity, stop_unload_activity, next_print_time, unload_completion):
+        self.dwell(self.kin_flush_delay)
+        self._flush_lookahead()
+        self.special_queuing_state = "Unload"
+        self.need_check_pause = self.reactor.NEVER
+        self.reactor.update_timer(self.flush_timer, self.reactor.NEVER)
+        self.do_kick_flush_timer = False
+        self.unload_completion = unload_completion
+        start_unload_activity()
+        try:
+            self._update_unload_move_time(next_print_time)
+        except UnloadModeEndSignal:
+            stop_unload_activity()
+        self.reactor.update_timer(self.flush_timer, self.reactor.NOW)
     # Misc commands
     def stats(self, eventtime):
         max_queue_time = max(self.print_time, self.last_flush_time)
