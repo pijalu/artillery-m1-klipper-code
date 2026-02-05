@@ -174,6 +174,8 @@ class VirtualSD:
             self.current_file.close()
             self.current_file = None
             self.reset_diy_status()
+        if(self.print_stats.state == "complete"):
+            self.reset_diy_status()
         self.file_position = self.file_size = 0
         self.print_stats.reset()
         self.printer.send_event("virtual_sdcard:reset_file")
@@ -390,7 +392,6 @@ class VirtualSD:
         elif self.current_file is not None:
             self.print_stats.note_pause()
         else:
-            self.reset_diy_status()
             self.print_stats.note_complete()
         return self.reactor.NEVER
 
