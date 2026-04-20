@@ -22,4 +22,5 @@ src-$(CONFIG_WANT_LIS2DW) += sensor_lis2dw.c
 src-$(CONFIG_WANT_LDC1612) += sensor_ldc1612.c
 src-$(CONFIG_WANT_HX71X) += sensor_hx71x.c
 src-$(CONFIG_WANT_ADS1220) += sensor_ads1220.c
+src-$(CONFIG_WANT_CS1237) += sensor_cs1237.c
 src-$(CONFIG_NEED_SENSOR_BULK) += sensor_bulk.c
